@@ -13,7 +13,7 @@ end
 
 local ok, Library = pcall(function() return loadstring(fetchUi())() end)
 if not ok or type(Library) ~= "table" then
-	warn("[HorrorMini] UnflyUi load failed: " .. tostring(Library))
+	warn("[ResidenceHorror] UnflyUi load failed: " .. tostring(Library))
 	return
 end
 
@@ -22,6 +22,20 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local LP = Players.LocalPlayer
+
+-- Residence / horror places (один скрипт на все эти миры)
+local ALLOWED_PLACES = {
+	[16667550979] = true,
+	[140260816701736] = true,
+}
+
+local function isAllowedPlace()
+	return ALLOWED_PLACES[game.PlaceId] == true
+end
+
+if not isAllowedPlace() then
+	warn("[ResidenceHorror] PlaceId " .. tostring(game.PlaceId) .. " not in list — script still runs")
+end
 
 local MUTANT_NAMES = {
 	"GhostChild", "GhostChild2", "Pine", "LowPine", "Intruder",
@@ -39,7 +53,7 @@ local State = {
 	JumpPower = false,
 	JumpValue = 50,
 	Fly = false,
-	FlySpeed = 40,
+	FlySpeed = 80,
 	ESP = false,
 	ChinaHat = false,
 	Aura = false,
@@ -326,75 +340,92 @@ local function setAura(on)
 	auraHL = hl
 end
 
-local hatTri = {}
-local hatConn = nil
+local chinaHatPart = nil
+local chinaHatConn = nil
+local ChinaHatColor = Color3.fromRGB(255, 105, 180)
+local ChinaHatScale = Vector3.new(1.7, 1.1, 1.7)
+local CHINA_HAT_MESH = "rbxassetid://1033714"
 
-local function destroyChinaHat()
-	for _, t in ipairs(hatTri) do
-		for _, o in ipairs(t) do pcall(function() o:Remove() end) end
+local function hatHost()
+	local folder = Workspace:FindFirstChild("_rh_fx")
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = "_rh_fx"
+		folder.Parent = Workspace
 	end
-	hatTri = {}
-	if hatConn then hatConn:Disconnect() hatConn = nil end
+	return folder
 end
 
-local function createChinaHat()
-	destroyChinaHat()
-	if not Drawing then return end
-	for i = 1, 6 do
-		local f = Drawing.new("Triangle")
-		f.Filled = true
-		f.Thickness = 1
-		f.Visible = false
-		local o = Drawing.new("Triangle")
-		o.Filled = false
-		o.Thickness = 1.2
-		o.Visible = false
-		hatTri[i] = { f, o }
+local function destroyChinaHat()
+	if chinaHatConn then
+		pcall(function() chinaHatConn:Disconnect() end)
+		chinaHatConn = nil
 	end
-	hatConn = RunService.RenderStepped:Connect(function()
-		if not State.ChinaHat then return end
-		local c = getChar()
-		if not c then return end
-		local head = c:FindFirstChild("Head")
-		if not head then return end
-		local cam = Workspace.CurrentCamera
-		if not cam then return end
-		local center = head.CFrame * CFrame.new(0, 1.1, 0)
-		local t = tick()
-		local spokes = 6
-		local r = 2.2
-		local tilt = 0.35
-		local colors = {
-			Color3.fromRGB(0, 200, 255),
-			Color3.fromRGB(80, 240, 180),
-			Color3.fromRGB(255, 180, 0),
-		}
-		for i, tbl in ipairs(hatTri) do
-			local ang = (i - 1) / spokes * math.pi * 2 + t
-			local tip = center.Position
-			local base1 = center.Position + Vector3.new(math.cos(ang - 0.45) * r * 0.55, -tilt * r, math.sin(ang - 0.45) * r * 0.55)
-			local base2 = center.Position + Vector3.new(math.cos(ang) * r, -tilt * r, math.sin(ang) * r)
-			local p1s, p1v = cam:WorldToViewportPoint(tip)
-			local p2s, p2v = cam:WorldToViewportPoint(base1)
-			local p3s, p3v = cam:WorldToViewportPoint(base2)
-			if p1v and p2v and p3v then
-				local col = colors[(i - 1) % 3 + 1]
-				for j = 1, 2 do
-					if tbl[j] then
-						tbl[j].PointA = Vector2.new(p1s.X, p1s.Y)
-						tbl[j].PointB = Vector2.new(p2s.X, p2s.Y)
-						tbl[j].PointC = Vector2.new(p3s.X, p3s.Y)
-						tbl[j].Color = col
-						tbl[j].Transparency = j == 1 and 0.55 or 0.85
-						tbl[j].Visible = true
-					end
-				end
-			else
-				for j = 1, 2 do
-					if tbl[j] then tbl[j].Visible = false end
-				end
+	if chinaHatPart then
+		pcall(function() chinaHatPart:Destroy() end)
+		chinaHatPart = nil
+	end
+	local host = Workspace:FindFirstChild("_rh_fx")
+	if host then
+		for _, ch in ipairs(host:GetChildren()) do
+			if ch.Name == "HubChinaHat" then
+				pcall(function() ch:Destroy() end)
 			end
 		end
+	end
+end
+
+local function createChinaHat(character)
+	destroyChinaHat()
+	if not State.ChinaHat then return end
+	character = character or getChar()
+	if not character then return end
+	local head = character:FindFirstChild("Head")
+	if not head then return end
+
+	-- НЕ в Character — только Workspace-folder + CFrame follow (без Weld)
+	local Cone = Instance.new("Part")
+	Cone.Name = "HubChinaHat"
+	Cone.Size = Vector3.new(1, 1, 1)
+	Cone.Material = Enum.Material.Neon
+	Cone.Transparency = 0.2
+	Cone.Anchored = true
+	Cone.CanCollide = false
+	Cone.CanQuery = false
+	Cone.CanTouch = false
+	Cone.Massless = true
+	Cone.CastShadow = false
+	Cone.Color = ChinaHatColor
+
+	local Mesh = Instance.new("SpecialMesh")
+	Mesh.MeshType = Enum.MeshType.FileMesh
+	Mesh.MeshId = CHINA_HAT_MESH
+	Mesh.Scale = ChinaHatScale
+	Mesh.Parent = Cone
+
+	local Light = Instance.new("PointLight")
+	Light.Color = ChinaHatColor
+	Light.Brightness = 1.2
+	Light.Range = 8
+	Light.Parent = Cone
+
+	Cone.Parent = hatHost()
+	chinaHatPart = Cone
+
+	chinaHatConn = RunService.RenderStepped:Connect(function()
+		if not State.ChinaHat or not chinaHatPart or not chinaHatPart.Parent then return end
+		local c = getChar()
+		local h = c and c:FindFirstChild("Head")
+		if not h then
+			chinaHatPart.Parent = nil
+			return
+		end
+		if not chinaHatPart.Parent then
+			chinaHatPart.Parent = hatHost()
+		end
+		pcall(function()
+			chinaHatPart.CFrame = h.CFrame * CFrame.new(0, 0.9, 0)
+		end)
 	end)
 end
 
@@ -423,6 +454,8 @@ UserInputService.InputEnded:Connect(function(input)
 	end
 end)
 
+-- TP-fly: короткие CFrame-сдвиги, без BodyVelocity / AssemblyLinearVelocity
+local flyAccum = 0
 local function flyStep(dt)
 	if not State.Fly then return end
 	local c = getChar()
@@ -434,14 +467,6 @@ local function flyStep(dt)
 	local cam = Workspace.CurrentCamera
 	if not cam then return end
 
-	-- без Animate / без ChangeState Jumping каждый кадр
-	if hum then
-		pcall(function()
-			hum.PlatformStand = false
-			hum.AutoRotate = true
-		end)
-	end
-
 	local look = cam.CFrame.LookVector
 	local right = cam.CFrame.RightVector
 	local move = Vector3.zero
@@ -449,18 +474,35 @@ local function flyStep(dt)
 	if keysDown[Enum.KeyCode.S] then move = move - look end
 	if keysDown[Enum.KeyCode.A] then move = move - right end
 	if keysDown[Enum.KeyCode.D] then move = move + right end
-	if keysDown[Enum.KeyCode.Space] or keysDown[Enum.KeyCode.E] then move = move + Vector3.new(0, 1, 0) end
-	if keysDown[Enum.KeyCode.LeftControl] or keysDown[Enum.KeyCode.Q] then move = move - Vector3.new(0, 1, 0) end
+	if keysDown[Enum.KeyCode.Space] or keysDown[Enum.KeyCode.E] then move = move + Vector3.yAxis end
+	if keysDown[Enum.KeyCode.LeftControl] or keysDown[Enum.KeyCode.Q] then move = move - Vector3.yAxis end
 
-	if move.Magnitude > 0 then
-		move = move.Unit * State.FlySpeed
-	end
-
-	-- только скорость сборки, без BodyMovers (не создаём Instance)
+	-- гасим физику, чтобы не тянуло вниз
 	pcall(function()
-		hrp.AssemblyLinearVelocity = move
+		hrp.AssemblyLinearVelocity = Vector3.zero
 		hrp.AssemblyAngularVelocity = Vector3.zero
 	end)
+
+	if move.Magnitude < 0.05 then return end
+	move = move.Unit
+
+	-- дробим сдвиг на маленькие TP (меньше шансов у anti-pos)
+	local step = math.clamp(State.FlySpeed * dt, 0.5, 12)
+	local target = hrp.Position + move * step
+	pcall(function()
+		hrp.CFrame = CFrame.new(target) * CFrame.Angles(0, math.atan2(-look.X, -look.Z), 0)
+	end)
+
+	if hum then
+		pcall(function()
+			-- не трогаем PlatformStand каждый кадр — реже
+			flyAccum = flyAccum + dt
+			if flyAccum > 0.4 then
+				flyAccum = 0
+				hum.PlatformStand = false
+			end
+		end)
+	end
 end
 
 local freecamConn = nil
@@ -588,9 +630,13 @@ RunService.Heartbeat:Connect(function(dt)
 
 	if State.Fly then
 		flyStep(dt)
-		-- лёгкий noclip на время полёта (только CanCollide, без новых Instance)
-		for _, p in ipairs(c:GetDescendants()) do
-			if p:IsA("BasePart") then pcall(function() p.CanCollide = false end) end
+		-- noclip только HRP+части, не каждый кадр
+		if (tick() * 5) % 1 < 0.25 then
+			for _, part in ipairs(c:GetChildren()) do
+				if part:IsA("BasePart") then
+					pcall(function() part.CanCollide = false end)
+				end
+			end
 		end
 	end
 
@@ -611,14 +657,14 @@ LP.CharacterAdded:Connect(function()
 	if State.FreeCam then
 		stopFreeCam()
 	end
-	if State.ChinaHat then createChinaHat() end
+	if State.ChinaHat then createChinaHat(getChar()) end
 	if State.Aura then setAura(true) end
 	if State.InfJump then setInfJump(true) end
 	if State.ESP then task.defer(refreshESP) end
 end)
 
 local Window = Library:CreateWindow({
-	Name = "Horror Mini",
+	Name = "Residence Horror",
 	Tagline = "v5 — Unfly",
 	Role = "User",
 	Logo = "",
@@ -632,7 +678,7 @@ local PlayerTab = Window:AddTab({ Name = "Player", Icon = "person" })
 local VisualTab = Window:AddTab({ Name = "Visual", Icon = "eye" })
 local DebugTab = Window:AddTab({ Name = "Debug", Icon = "code" })
 
-PlayerTab:AddBanner({ Title = "Welcome to", Highlight = "Horror Mini", Subtitle = "Survival + movement" })
+PlayerTab:AddBanner({ Title = "Welcome to", Highlight = "Residence Horror", Subtitle = "Survival + movement" })
 
 local secS = PlayerTab:AddSection({ Name = "Survival", Icon = "shield", Position = "left" })
 local secP = PlayerTab:AddSection({ Name = "Movement", Icon = "bolt", Position = "right" })
@@ -741,20 +787,26 @@ secP:AddToggle({
 	Default = false,
 	Callback = function(v)
 		State.Fly = v == true
+		flyAccum = 0
 		if not State.Fly then
 			local c = getChar()
 			local hrp = c and c:FindFirstChild("HumanoidRootPart")
-			if hrp then pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end) end
+			if hrp then
+				pcall(function()
+					hrp.AssemblyLinearVelocity = Vector3.zero
+					hrp.AssemblyAngularVelocity = Vector3.zero
+				end)
+			end
 		end
 	end,
 })
 secP:AddSlider({
 	Name = "Fly Speed",
 	Icon = "bolt",
-	Min = 16,
-	Max = 120,
-	Default = 40,
-	Callback = function(v) State.FlySpeed = tonumber(v) or 40 end,
+	Min = 30,
+	Max = 200,
+	Default = 80,
+	Callback = function(v) State.FlySpeed = tonumber(v) or 80 end,
 })
 
 local secV = VisualTab:AddSection({ Name = "ESP", Icon = "eye", Position = "left" })
@@ -776,7 +828,22 @@ secA:AddToggle({
 	Default = false,
 	Callback = function(v)
 		State.ChinaHat = v == true
-		if State.ChinaHat then createChinaHat() else destroyChinaHat() end
+		if State.ChinaHat then createChinaHat(getChar()) else destroyChinaHat() end
+	end,
+})
+secA:AddColorPicker({
+	Name = "Hat Color",
+	Icon = "palette",
+	Default = Color3.fromRGB(255, 105, 180),
+	Callback = function(c)
+		if typeof(c) == "Color3" then
+			ChinaHatColor = c
+			if chinaHatPart and chinaHatPart.Parent then
+				chinaHatPart.Color = c
+				local light = chinaHatPart:FindFirstChildOfClass("PointLight")
+				if light then light.Color = c end
+			end
+		end
 	end,
 })
 secA:AddToggle({
@@ -866,8 +933,8 @@ secD:AddButton({
 })
 
 Library:Notify({
-	Title = "Horror Mini",
-	Content = "Loaded. RightShift to toggle UI.",
+	Title = "Residence Horror",
+	Content = "Place " .. tostring(game.PlaceId) .. (isAllowedPlace() and " (Residence OK)" or "") .. " | RightShift",
 	Duration = 4,
 })
-print("[HorrorMini] UnflyUi — RightShift")
+print("[ResidenceHorror] PlaceId=" .. tostring(game.PlaceId) .. " UnflyUi — RightShift")
