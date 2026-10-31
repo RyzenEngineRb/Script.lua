@@ -21,6 +21,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
 local LP = Players.LocalPlayer
 
 -- Residence / horror places (один скрипт на все эти миры)
@@ -63,6 +64,10 @@ local State = {
 	FOVValue = 70,
 	FreeCam = false,
 	FreeCamSpeed = 60,
+	Fullbright = false,
+	LocalLight = false,
+	LightBright = 2,
+	SafeMode = true,
 }
 
 local function getChar()
@@ -424,6 +429,117 @@ local function applyFOV()
 	cam.FieldOfView = State.FOV and State.FOVValue or defaultFOV
 end
 
+local lightingSaved = nil
+local localLightPart = nil
+local localLightConn = nil
+
+local function saveLighting()
+	if lightingSaved then return end
+	lightingSaved = {
+		Brightness = Lighting.Brightness,
+		Ambient = Lighting.Ambient,
+		OutdoorAmbient = Lighting.OutdoorAmbient,
+		FogEnd = Lighting.FogEnd,
+		FogStart = Lighting.FogStart,
+		ClockTime = Lighting.ClockTime,
+		GlobalShadows = Lighting.GlobalShadows,
+	}
+end
+
+local function restoreLighting()
+	if not lightingSaved then return end
+	pcall(function()
+		Lighting.Brightness = lightingSaved.Brightness
+		Lighting.Ambient = lightingSaved.Ambient
+		Lighting.OutdoorAmbient = lightingSaved.OutdoorAmbient
+		Lighting.FogEnd = lightingSaved.FogEnd
+		Lighting.FogStart = lightingSaved.FogStart
+		Lighting.ClockTime = lightingSaved.ClockTime
+		Lighting.GlobalShadows = lightingSaved.GlobalShadows
+	end)
+	lightingSaved = nil
+end
+
+local function applyFullbright()
+	if not State.Fullbright then
+		restoreLighting()
+		return
+	end
+	saveLighting()
+	pcall(function()
+		Lighting.Brightness = 3
+		Lighting.Ambient = Color3.fromRGB(180, 180, 180)
+		Lighting.OutdoorAmbient = Color3.fromRGB(160, 160, 160)
+		Lighting.FogEnd = 1e6
+		Lighting.FogStart = 1e6
+		Lighting.GlobalShadows = false
+		if Lighting.ClockTime < 6 or Lighting.ClockTime > 18 then
+			Lighting.ClockTime = 14
+		end
+	end)
+end
+
+local function destroyLocalLight()
+	if localLightConn then
+		pcall(function() localLightConn:Disconnect() end)
+		localLightConn = nil
+	end
+	if localLightPart then
+		pcall(function() localLightPart:Destroy() end)
+		localLightPart = nil
+	end
+	local host = Workspace:FindFirstChild("_rh_fx")
+	if host then
+		for _, ch in ipairs(host:GetChildren()) do
+			if ch.Name == "LocalLight" then pcall(function() ch:Destroy() end) end
+		end
+	end
+end
+
+local function createLocalLight()
+	destroyLocalLight()
+	if not State.LocalLight then return end
+	local host = Workspace:FindFirstChild("_rh_fx")
+	if not host then
+		host = Instance.new("Folder")
+		host.Name = "_rh_fx"
+		host.Parent = Workspace
+	end
+	local part = Instance.new("Part")
+	part.Name = "LocalLight"
+	part.Size = Vector3.new(0.2, 0.2, 0.2)
+	part.Transparency = 1
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CanTouch = false
+	part.CastShadow = false
+	part.Massless = true
+	part.Parent = host
+	local light = Instance.new("PointLight")
+	light.Brightness = State.LightBright
+	light.Range = 60
+	light.Shadows = false
+	light.Color = Color3.fromRGB(255, 250, 240)
+	light.Parent = part
+	localLightPart = part
+	localLightConn = RunService.RenderStepped:Connect(function()
+		if not State.LocalLight or not localLightPart then return end
+		local cam = Workspace.CurrentCamera
+		local c = getChar()
+		local hrp = c and c:FindFirstChild("HumanoidRootPart")
+		local pos = (hrp and hrp.Position) or (cam and cam.CFrame.Position)
+		if pos then
+			pcall(function()
+				localLightPart.CFrame = CFrame.new(pos + Vector3.new(0, 4, 0))
+				local pl = localLightPart:FindFirstChildOfClass("PointLight")
+				if pl then pl.Brightness = State.LightBright end
+			end)
+		end
+	end)
+end
+
+
 -- Полёт без BodyVelocity / без анимаций / без new Instance на персонаже
 local keysDown = {}
 UserInputService.InputBegan:Connect(function(input, gp)
@@ -471,7 +587,8 @@ local function flyStep(dt)
 	move = move.Unit
 
 	-- дробим сдвиг на маленькие TP (меньше шансов у anti-pos)
-	local step = math.clamp(State.FlySpeed * dt, 0.5, 12)
+	local maxStep = State.SafeMode and 6 or 10
+	local step = math.clamp(State.FlySpeed * dt, 0.4, maxStep)
 	local target = hrp.Position + move * step
 	pcall(function()
 		hrp.CFrame = CFrame.new(target) * CFrame.Angles(0, math.atan2(-look.X, -look.Z), 0)
@@ -575,34 +692,37 @@ RunService.Heartbeat:Connect(function(dt)
 	if not c then return end
 	local hum = c:FindFirstChildOfClass("Humanoid")
 
-	if State.InfStamina then
-		local stam = findVal({ "Sprint", "Stam" })
-		if stam then pcall(function() if stam.Value < 5 then stam.Value = 5 end end) end
-		local od = findVal({ "Sprint", "Overdrive" })
-		if od then pcall(function() od.Value = 0 end) end
-	end
-
-	if State.InfBreath then
-		local breath = findVal({ "Breath" })
-		if breath then pcall(function() if breath.Value < 20 then breath.Value = 20 end end) end
-	end
-
-	if State.InfCold then
-		protectCold()
+	-- реже трогаем Value (меньше шанс value-watch AC)
+	if (tick() * 3) % 1 < 0.4 then
+		if State.InfStamina then
+			local stam = findVal({ "Sprint", "Stam" })
+			if stam then pcall(function() if stam.Value < 4 then stam.Value = 5 end end) end
+			local od = findVal({ "Sprint", "Overdrive" })
+			if od and od.Value ~= 0 then pcall(function() od.Value = 0 end) end
+		end
+		if State.InfBreath then
+			local breath = findVal({ "Breath" })
+			if breath then pcall(function() if breath.Value < 15 then breath.Value = 20 end end) end
+		end
+		if State.InfCold then
+			protectCold()
+		end
 	end
 
 	-- WalkSpeed НЕ трогаем: Residence сразу детектит
 	-- Speed Boost = лёгкий CFrame-буст только при реальном движении WASD
-	if State.Speed then
+	if State.Speed and not State.SafeMode then
 		local hrp = c:FindFirstChild("HumanoidRootPart")
-		if hrp and hum and hum.MoveDirection.Magnitude > 0.1 then
-			local boost = math.clamp((State.SpeedValue - 16) * 0.045, 0, 2.2)
-			if boost > 0 then
+		if hrp and hum and hum.MoveDirection.Magnitude > 0.15 then
+			local boost = math.clamp((State.SpeedValue - 16) * 0.03, 0, 1.4)
+			if boost > 0 and (tick() * 8) % 1 < 0.5 then
 				pcall(function()
 					hrp.CFrame = hrp.CFrame + hum.MoveDirection * boost
 				end)
 			end
 		end
+	elseif State.Speed and State.SafeMode then
+		-- SafeMode: без CFrame-буста (только Fly для перемещения)
 	end
 
 	-- JumpPower тоже часто мониторят — не пишем каждый тик
@@ -610,13 +730,18 @@ RunService.Heartbeat:Connect(function(dt)
 		-- только через JumpRequest / ChangeState, значение Humanoid не меняем
 	end
 
-	if State.Noclip then
-		for _, p in ipairs(c:GetDescendants()) do
+	if State.Noclip and (tick() * 4) % 1 < 0.35 then
+		local hrp = c:FindFirstChild("HumanoidRootPart")
+		if hrp then pcall(function() hrp.CanCollide = false end) end
+		for _, p in ipairs(c:GetChildren()) do
 			if p:IsA("BasePart") then pcall(function() p.CanCollide = false end) end
 		end
 	end
 
 	if State.FOV and not State.FreeCam then pcall(applyFOV) end
+	if State.Fullbright and (tick() * 2) % 1 < 0.3 then
+		pcall(applyFullbright)
+	end
 
 	if State.Fly then
 		flyStep(dt)
@@ -748,6 +873,14 @@ secP:AddSlider({
 	Callback = function(v) State.SpeedValue = tonumber(v) or 24 end,
 })
 secP:AddToggle({
+	Name = "Safe Mode",
+	Icon = "shield",
+	Default = true,
+	Callback = function(v)
+		State.SafeMode = v == true
+	end,
+})
+secP:AddToggle({
 	Name = "Fly",
 	Icon = "bolt",
 	Default = false,
@@ -859,6 +992,36 @@ secC:AddSlider({
 	Default = 60,
 	Callback = function(v) State.FreeCamSpeed = tonumber(v) or 60 end,
 })
+secC:AddToggle({
+	Name = "Fullbright",
+	Icon = "sun",
+	Default = false,
+	Callback = function(v)
+		State.Fullbright = v == true
+		if State.Fullbright then applyFullbright() else restoreLighting() end
+	end,
+})
+secC:AddToggle({
+	Name = "Local Light",
+	Icon = "sun",
+	Default = false,
+	Callback = function(v)
+		State.LocalLight = v == true
+		if State.LocalLight then createLocalLight() else destroyLocalLight() end
+	end,
+})
+secC:AddSlider({
+	Name = "Light Brightness",
+	Icon = "sun",
+	Min = 0.5,
+	Max = 5,
+	Default = 2,
+	Increment = 0.1,
+	Callback = function(v)
+		State.LightBright = tonumber(v) or 2
+	end,
+})
+
 
 local secD = DebugTab:AddSection({ Name = "Anti Cheat", Icon = "shield", Position = "left" })
 secD:AddButton({
