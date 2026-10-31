@@ -25,6 +25,8 @@ local LP = Players.LocalPlayer
 
 -- Residence / horror places (один скрипт на все эти миры)
 local ALLOWED_PLACES = {
+	[14437001043] = true,
+	[14896802601] = true,
 	[16667550979] = true,
 	[140260816701736] = true,
 }
@@ -163,25 +165,7 @@ local function protectCold()
 	end
 end
 
-local realWalkSpeed = 16
-local realJumpPower = 50
-
--- Без getrawmetatable / __newindex — игра кикает: "newindexInstance detector detected"
-local function safeSetWalkSpeed(hum, value)
-	if not hum then return end
-	pcall(function()
-		-- только клиентское значение, без хука метатаблицы
-		hum.WalkSpeed = value
-	end)
-end
-
-local function safeSetJumpPower(hum, value)
-	if not hum then return end
-	pcall(function()
-		hum.UseJumpPower = true
-		hum.JumpPower = value
-	end)
-end
+-- WalkSpeed / JumpPower Humanoid не пишем — Residence детектит сразу
 
 local patchedRemotes = {}
 -- Не патчим FireServer через rawset — тоже ловится детекторами instance newindex
@@ -607,17 +591,23 @@ RunService.Heartbeat:Connect(function(dt)
 		protectCold()
 	end
 
-	if State.Speed and hum then
-		-- мягкий буст: не каждый кадр, реже дергает детектор
-		if (tick() * 10) % 3 < 1 then
-			safeSetWalkSpeed(hum, State.SpeedValue)
+	-- WalkSpeed НЕ трогаем: Residence сразу детектит
+	-- Speed Boost = лёгкий CFrame-буст только при реальном движении WASD
+	if State.Speed then
+		local hrp = c:FindFirstChild("HumanoidRootPart")
+		if hrp and hum and hum.MoveDirection.Magnitude > 0.1 then
+			local boost = math.clamp((State.SpeedValue - 16) * 0.045, 0, 2.2)
+			if boost > 0 then
+				pcall(function()
+					hrp.CFrame = hrp.CFrame + hum.MoveDirection * boost
+				end)
+			end
 		end
 	end
 
+	-- JumpPower тоже часто мониторят — не пишем каждый тик
 	if State.JumpPower and hum then
-		if (tick() * 10) % 3 < 1 then
-			safeSetJumpPower(hum, State.JumpValue)
-		end
+		-- только через JumpRequest / ChangeState, значение Humanoid не меняем
 	end
 
 	if State.Noclip then
@@ -742,44 +732,20 @@ secP:AddToggle({
 	Callback = function(v) setInfJump(v == true) end,
 })
 secP:AddToggle({
-	Name = "Speed Boost",
+	Name = "Speed Boost (no WS)",
 	Icon = "bolt",
 	Default = false,
 	Callback = function(v)
 		State.Speed = v == true
-		if not State.Speed then
-			local hum = getHum()
-			if hum then safeSetWalkSpeed(hum, realWalkSpeed) end
-		end
 	end,
 })
 secP:AddSlider({
-	Name = "Speed Value",
+	Name = "Speed Strength",
 	Icon = "bolt",
-	Min = 12,
-	Max = 50,
-	Default = 22,
-	Callback = function(v) State.SpeedValue = tonumber(v) or 22 end,
-})
-secP:AddToggle({
-	Name = "Jump Boost",
-	Icon = "person",
-	Default = false,
-	Callback = function(v)
-		State.JumpPower = v == true
-		if not State.JumpPower then
-			local hum = getHum()
-			if hum then safeSetJumpPower(hum, realJumpPower) end
-		end
-	end,
-})
-secP:AddSlider({
-	Name = "Jump Value",
-	Icon = "person",
-	Min = 50,
-	Max = 120,
-	Default = 50,
-	Callback = function(v) State.JumpValue = tonumber(v) or 50 end,
+	Min = 16,
+	Max = 40,
+	Default = 24,
+	Callback = function(v) State.SpeedValue = tonumber(v) or 24 end,
 })
 secP:AddToggle({
 	Name = "Fly",
@@ -926,7 +892,7 @@ secD:AddButton({
 		local ws = hum and tostring(hum.WalkSpeed) or "?"
 		Library:Notify({
 			Title = "WalkSpeed",
-			Content = "Client sees: " .. ws .. " | real: " .. tostring(realWalkSpeed),
+			Content = "Client WS (read-only): " .. ws .. " — script does not set it",
 			Duration = 3,
 		})
 	end,
